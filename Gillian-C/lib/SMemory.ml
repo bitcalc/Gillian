@@ -48,7 +48,7 @@ type st = Subst.t
 
 type fill_typ = PTR | INT | FLOAT32 | FLOAT64
 
-type i_fix_t = IFSvalMem of (vt * int * fill_typ)
+type i_fix_t = IFSvalMem of { loc : vt; ofs : int; fill : fill_typ }
 
 type err_t = {
   failing_constraint : Formula.t;
@@ -570,7 +570,8 @@ module Mem = struct
           Result.error
             [
               make_err ~rvs:[ loc ]
-                ~fixes:[ [ IFSvalMem (loc, ofs, fill_typ_of_chunk chunk) ] ]
+                ~fixes:
+                  [ [ IFSvalMem { loc; ofs; fill = fill_typ_of_chunk chunk } ] ]
                 ();
             ]
       | Some ln -> Result.ok ln
@@ -593,7 +594,7 @@ module Mem = struct
   let load chunk mem ~pfs ~gamma loc ofs =
     let load_error =
       make_err ~rvs:[ loc ]
-        ~fixes:[ [ IFSvalMem (loc, ofs, fill_typ_of_chunk chunk) ] ]
+        ~fixes:[ [ IFSvalMem { loc; ofs; fill = fill_typ_of_chunk chunk } ] ]
         ()
     in
     let** loc_name =
@@ -622,19 +623,22 @@ module Mem = struct
     | [ a ]  -> check a
     | a :: r -> get_uniform_perm ~current:(check a) r
 
-  let get mem pfs gamma loc low high =
+  let get mem pfs gamma loc ofs chunk =
+    let low = ofs in
+    let high = size_chunk chunk in
     let* loc_name = get_loc_name pfs gamma loc in
     let* lb, hb = find_opt loc_name mem.bounds in
     if lb <= low && low <= high && high <= hb then
       let* cont_loc = find_opt loc_name mem.contents in
       let* perm_loc = find_opt loc_name mem.perms in
       let size = high - low in
-      let sval = val_from_mem_data size (getN size (low - lb) cont_loc) in
+      let sval = decode_val chunk (getN size (low - lb) cont_loc) in
       let perm = get_uniform_perm (getN size (low - lb) perm_loc) in
       Some (loc_name, sval, perm)
     else None
 
-  let set_existing_loc mem loc low high sval perm_opt =
+  let set_raw_existing_loc mem loc low data perm_opt =
+    let high = low + List.length data in
     let rec list_make k p = if k = 0 then [] else p :: list_make (k - 1) p in
     let extend st_cop sz el arr =
       let sz_arr = Array.length arr in
@@ -664,9 +668,7 @@ module Mem = struct
         (nhb, ncontent, nperms)
       else (hb, content, perms)
     in
-    let new_content =
-      setN (mem_data_from_val (high - low) sval) (low - nlb) content
-    in
+    let new_content = setN data (low - nlb) content in
     let new_perm = setN (list_make (high - low) perm_opt) (low - nlb) perms in
     let new_bounds = (nlb, nhb) in
     let new_mem =
@@ -678,29 +680,33 @@ module Mem = struct
     in
     Some new_mem
 
-  let set_new_loc mem aloc low high sval perm_opt =
+  let set_raw_new_loc mem aloc low data perm_opt =
+    let high = low + List.length data in
     let bounds = PMap.add aloc (low, high) mem.bounds in
-    let contents =
-      PMap.add aloc
-        (Array.of_list (mem_data_from_val (high - low) sval))
-        mem.contents
-    in
+    let contents = PMap.add aloc (Array.of_list data) mem.contents in
     let perms = PMap.add aloc (Array.make (high - low) perm_opt) mem.perms in
     { bounds; contents; perms }
 
-  let set mem pfs gamma loc low high sval perm_opt =
+  let set mem pfs gamma loc ofs chunk sval perm_opt =
     match get_loc_name pfs gamma loc with
     | None          ->
         let aloc = ALoc.alloc () in
         let pf = Formula.Eq (Expr.ALoc aloc, loc) in
-        let new_mem = set_new_loc mem aloc low high sval perm_opt in
+        let new_mem =
+          set_raw_new_loc mem aloc ofs (encode_val chunk sval) perm_opt
+        in
         Some (new_mem, [ pf ])
     | Some loc_name ->
         Logging.verboser (fun fmt -> fmt "Found loc_name %s" loc_name);
         let exists = Option.is_some (find_opt loc_name mem.bounds) in
         let+ new_mem =
-          if exists then set_existing_loc mem loc_name low high sval perm_opt
-          else Some (set_new_loc mem loc_name low high sval perm_opt)
+          if exists then
+            set_raw_existing_loc mem loc_name ofs (encode_val chunk sval)
+              perm_opt
+          else
+            Some
+              (set_raw_new_loc mem loc_name ofs (encode_val chunk sval)
+                 perm_opt)
         in
         (new_mem, [])
 
@@ -711,13 +717,17 @@ module Mem = struct
       bounds = PMap.remove loc mem.bounds;
     }
 
-  let rem mem loc low high =
+  let rem_raw mem loc low high =
     let () = ALoc.dealloc loc in
     let* lb, hb = find_opt loc mem.bounds in
     if low < lb || high > hb || not (range_perm mem loc low high Nonempty) then
       None
     else
-      let* memp = set_existing_loc mem loc low high SUndefined None in
+      let* memp =
+        set_raw_existing_loc mem loc low
+          (mem_data_from_val (high - low) SUndefined)
+          None
+      in
       (* then we clean the memory, by looking at what has no permissions *)
       let* content = find_opt loc memp.contents in
       let* perms = find_opt loc memp.perms in
@@ -747,13 +757,15 @@ module Mem = struct
             bounds = PMap.add loc (hn, ln) memp.bounds;
           }
 
+  let rem mem loc ofs chunk = rem_raw mem loc ofs (ofs + size_chunk chunk)
+
   let free mem loc low high =
     if not (range_perm mem loc low high Freeable) then
       failwith
         (Format.asprintf
            "Range between %i and %i at location %s is not freeable" low high
            loc)
-    else rem mem loc low high
+    else rem_raw mem loc low high
 
   let loadbytes mem loc_name ofs size =
     if range_perm mem loc_name ofs (ofs + size) Readable then
@@ -1135,9 +1147,10 @@ let execute_move heap pfs gamma params =
 let execute_mem_get heap pfs gamma params =
   let open Gillian.Gil_syntax.Expr in
   match params with
-  | [ loc; Lit (Num low); Lit (Num high) ] -> (
-      let int_low, int_high = (int_of_float low, int_of_float high) in
-      let res = Mem.get heap.mem pfs gamma loc int_low int_high in
+  | [ loc; Lit (Num ofs); Lit (String chunk_string) ] -> (
+      let chunk = ValueTranslation.chunk_of_string chunk_string in
+      let int_ofs = int_of_float ofs in
+      let res = Mem.get heap.mem pfs gamma loc int_ofs chunk in
       match res with
       | Some (loc_name, sval, perm) ->
           let loc_e =
@@ -1152,7 +1165,14 @@ let execute_mem_get heap pfs gamma params =
           ASucc
             [
               make_branch ~heap
-                ~rets:[ loc_e; Lit (Num low); Lit (Num high); sval_e; perm_e ]
+                ~rets:
+                  [
+                    loc_e;
+                    Lit (Num ofs);
+                    Lit (String chunk_string);
+                    sval_e;
+                    perm_e;
+                  ]
                 ~new_pfs ~new_gamma ();
             ]
       | None -> AFail [] )
@@ -1161,12 +1181,18 @@ let execute_mem_get heap pfs gamma params =
 let execute_mem_set heap pfs gamma params =
   let open Gillian.Gil_syntax.Expr in
   match List.map (FOLogic.Reduction.reduce_lexpr ~gamma ~pfs) params with
-  | [ loc; Lit (Num low); Lit (Num high); sval_e; Lit (String perm_string) ]
-    -> (
-      let int_low, int_high = (int_of_float low, int_of_float high) in
+  | [
+   loc;
+   Lit (Num ofs);
+   Lit (String chunk_string);
+   sval_e;
+   Lit (String perm_string);
+  ] -> (
+      let int_ofs = int_of_float ofs in
+      let chunk = ValueTranslation.chunk_of_string chunk_string in
       let sval, new_pfs_sv = SVal.of_gil_expr_exn ~pfs ~gamma sval_e in
       let perm_opt = ValueTranslation.permission_opt_of_string perm_string in
-      let res = Mem.set heap.mem pfs gamma loc int_low int_high sval perm_opt in
+      let res = Mem.set heap.mem pfs gamma loc int_ofs chunk sval perm_opt in
       match res with
       | Some (memp, new_pfs) ->
           ASucc
@@ -1180,10 +1206,11 @@ let execute_mem_set heap pfs gamma params =
 let execute_mem_rem heap _pfs _gamma params =
   let open Gillian.Gil_syntax.Expr in
   match params with
-  | [ Lit (Loc loc); Lit (Num low); Lit (Num high) ]
-  | [ ALoc loc; Lit (Num low); Lit (Num high) ] -> (
-      let int_low, int_high = (int_of_float low, int_of_float high) in
-      let res = Mem.rem heap.mem loc int_low int_high in
+  | [ Lit (Loc loc); Lit (Num ofs); Lit (String chunk_string) ]
+  | [ ALoc loc; Lit (Num ofs); Lit (String chunk_string) ] -> (
+      let int_ofs = int_of_float ofs in
+      let chunk = ValueTranslation.chunk_of_string chunk_string in
+      let res = Mem.rem heap.mem loc int_ofs chunk in
       match res with
       | Some memp ->
           ASucc [ make_branch ~heap:{ heap with mem = memp } ~rets:[] () ]
@@ -1246,7 +1273,13 @@ let execute_genvremdef heap _pfs _gamma params =
 
 (* Complete fixes  *)
 
-type c_fix_t = CFSValMem of (string * int * SVal.t * int)
+type c_fix_t =
+  | CFSValMem of {
+      loc : string;
+      ofs : int;
+      sval : SVal.t;
+      chunk : Compcert.AST.memory_chunk;
+    }
 
 (* Pretty printing utils *)
 
@@ -1259,16 +1292,17 @@ let str_fill_type ft =
 
 let pp_i_fix fmt i_fix =
   match i_fix with
-  | IFSvalMem (loc, ofs, fillt) ->
+  | IFSvalMem { loc; ofs; fill } ->
       Format.fprintf fmt "IFSvalMem(%a, %i, %s)" Expr.pp loc ofs
-        (str_fill_type fillt)
+        (str_fill_type fill)
 
 (* let str_of_i_fix i_f = Format.asprintf "%a" pp_i_fix i_f *)
 
 let pp_c_fix fmt c_fix =
   match c_fix with
-  | CFSValMem (loc, ofs, sv, size) ->
-      Format.fprintf fmt "CFSvalMem(%s, %i, %a, %i)" loc ofs SVal.pp sv size
+  | CFSValMem { loc; ofs; sval; chunk } ->
+      Format.fprintf fmt "CFSvalMem(%s, %i, %a, %s)" loc ofs SVal.pp sval
+        (ValueTranslation.string_of_chunk chunk)
 
 (* let str_of_c_fix c_f = Format.asprintf "%a" pp_c_fix c_f *)
 
@@ -1385,7 +1419,7 @@ let get_failing_constraint e = e.failing_constraint
 let get_fixes ?simple_fix:_ _heap _pfs _gamma err =
   let fixes = err.fixes in
   match fixes with
-  | [ [ IFSvalMem (loc, ofs, typ) ] ] ->
+  | [ [ IFSvalMem { loc; ofs; fill } ] ] ->
       let aloc, new_pfs, new_spec_vars =
         match loc with
         | LVar loclv ->
@@ -1399,29 +1433,30 @@ let get_fixes ?simple_fix:_ _heap _pfs _gamma err =
                location"
       in
       let sval_possibilities =
-        match typ with
+        let open Compcert.AST in
+        match fill with
         | FLOAT32 ->
             let value = LVar.alloc () in
             let type_value = Asrt.Types [ (LVar value, NumberType) ] in
             let sval = SVal.SVfloat (LVar value) in
-            [ ([ type_value ], SS.singleton value, sval, 4) ]
+            [ ([ type_value ], SS.singleton value, sval, Mfloat32) ]
         | FLOAT64 ->
             let value = LVar.alloc () in
             let type_value = Asrt.Types [ (LVar value, NumberType) ] in
             let sval = SVal.SVfloat (LVar value) in
-            [ ([ type_value ], SS.singleton value, sval, 8) ]
+            [ ([ type_value ], SS.singleton value, sval, Mfloat64) ]
         | INT     ->
             let value = LVar.alloc () in
             let type_value = Asrt.Types [ (LVar value, NumberType) ] in
             let sval = SVal.SVint (LVar value) in
-            [ ([ type_value ], SS.singleton value, sval, 4) ]
+            [ ([ type_value ], SS.singleton value, sval, Mint32) ]
         | PTR     ->
             let offset_target = LVar.alloc () in
             let aloc_target = ALoc.alloc () in
             let type_offset = Asrt.Types [ (LVar offset_target, NumberType) ] in
             let sval_ptr = SVal.Sptr (aloc_target, LVar offset_target) in
             let size_ptr =
-              if Compcert.Archi.ptr64 then 8
+              if Compcert.Archi.ptr64 then Mint64
               else failwith "Bi-abduction is only implemented in Archi 64"
             in
             [
@@ -1429,8 +1464,8 @@ let get_fixes ?simple_fix:_ _heap _pfs _gamma err =
               ([], SS.empty, SVal.SVlong (Lit (Num 0.)), size_ptr);
             ]
       in
-      let build_with_sval (asrts, vars, sv, size) =
-        ( [ CFSValMem (aloc, ofs, sv, size) ],
+      let build_with_sval (asrts, vars, sval, chunk) =
+        ( [ CFSValMem { loc = aloc; ofs; sval; chunk } ],
           new_pfs,
           SS.union new_spec_vars vars,
           asrts )
@@ -1440,10 +1475,10 @@ let get_fixes ?simple_fix:_ _heap _pfs _gamma err =
 
 let apply_fix heap pfs gamma fix =
   match fix with
-  | CFSValMem (loc_name, ofs, svl, size) -> (
+  | CFSValMem { loc = loc_name; ofs; sval; chunk } -> (
       let loc = Expr.loc_from_loc_name loc_name in
       let res_mem =
-        Mem.set !heap.mem pfs gamma loc ofs (ofs + size) svl (Some Freeable)
+        Mem.set !heap.mem pfs gamma loc ofs chunk sval (Some Freeable)
       in
       match res_mem with
       | Some (memp, []) ->

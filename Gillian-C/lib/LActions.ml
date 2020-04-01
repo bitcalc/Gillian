@@ -1,3 +1,5 @@
+open Gillian.Gil_syntax
+
 (* First, type definitions *)
 
 type mem_ac =
@@ -168,3 +170,50 @@ let ga_loc_indexes ga =
   | GGenv Symbol     -> []
 
 let ga_loc_indexes_str ga_str = ga_from_str ga_str |> ga_loc_indexes
+
+(** {2 Action constructors} *)
+
+let alloc x low high = Cmd.LAction (x, str_ac (AMem Alloc), [ low; high ])
+
+let drop_perm x loc low high perm =
+  Cmd.LAction (x, str_ac (AMem DropPerm), [ loc; low; high; perm ])
+
+let get_cur_perm x loc ofs =
+  Cmd.LAction (x, str_ac (AMem GetCurPerm), [ loc; ofs ])
+
+let store x chunk loc ofs value =
+  Cmd.LAction (x, str_ac (AMem Store), [ chunk; loc; ofs; value ])
+
+let load x chunk loc ofs =
+  Cmd.LAction (x, str_ac (AMem Load), [ chunk; loc; ofs ])
+
+let free x loc low high = Cmd.LAction (x, str_ac (AMem Free), [ loc; low; high ])
+
+let move x loc_a ofs_a loc_b ofs_b sz =
+  Cmd.LAction (x, str_ac (AMem Move), [ loc_a; ofs_a; loc_b; ofs_b; sz ])
+
+let get x loc ofs chunk =
+  Cmd.LAction (x, str_ac (AMem MGet), [ loc; ofs; chunk ])
+
+let set x loc ofs chunk value perm =
+  Cmd.LAction (x, str_ac (AMem MSet), [ loc; ofs; chunk; value; perm ])
+
+let rem x loc ofs chunk =
+  Cmd.LAction (x, str_ac (AMem MRem), [ loc; ofs; chunk ])
+
+let get_symbol x symb = Cmd.LAction (x, str_ac (AGEnv GetSymbol), [ symb ])
+
+let set_symbol x symb loc =
+  Cmd.LAction (x, str_ac (AGEnv SetSymbol), [ symb; loc ])
+
+let rem_symbol x symb = Cmd.LAction (x, str_ac (AGEnv RemSymbol), [ symb ])
+
+let get_definition x loc = Cmd.LAction (x, str_ac (AGEnv GetDef), [ loc ])
+
+let set_definition x loc def =
+  Cmd.LAction (x, str_ac (AGEnv SetDef), [ loc; def ])
+
+let rem_definition x loc = Cmd.LAction (x, str_ac (AGEnv RemDef), [ loc ])
+
+let pred_sval loc ofs chunk value perm =
+  Asrt.GA (str_ga (GMem SVal), [ loc; ofs; chunk ], [ value; perm ])

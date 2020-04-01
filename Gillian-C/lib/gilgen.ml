@@ -170,10 +170,7 @@ let rec trans_expr ?(fname = "main") ~local_env expr =
       let name = true_name id in
       let gvar_act = gen_str Prefix.gvar in
       let gvar_val = gen_str Prefix.gvar in
-      let genvlookup = LActions.(str_ac (AGEnv GetSymbol)) in
-      let cmd_act =
-        Cmd.LAction (gvar_act, genvlookup, [ Expr.Lit (Literal.String name) ])
-      in
+      let cmd_act = LActions.get_symbol gvar_act (Lit (String name)) in
       let zero = Expr.Lit (Literal.Num 0.) in
       let cmd_assign =
         Cmd.Assignment (gvar_val, Expr.EList [ nth gvar_act 1; zero ])
@@ -517,10 +514,7 @@ let alloc_var fname (name, sz) =
   let gvar = Generators.gen_str fname Prefix.gvar in
   let ocaml_size = ValueTranslation.gil_size_of_compcert sz in
   let expr_size = Expr.Lit (Literal.Num ocaml_size) in
-  let alloc = LActions.(str_ac (AMem Alloc)) in
-  let action_cmd =
-    Cmd.LAction (gvar, alloc, [ Expr.Lit (Literal.Num 0.); expr_size ])
-  in
+  let action_cmd = LActions.alloc gvar (Lit (Num 0.)) expr_size in
   let assign_env =
     Cmd.Assignment (name, Expr.EList [ nth gvar 0; expr_size ])
   in
