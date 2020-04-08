@@ -1,4 +1,4 @@
-(** We do these operations in a separate file so that we do not clutter gilgen *)
+(* We do these operations in a separate file so that we do not clutter gilgen *)
 open Gillian.Gil_syntax
 
 open CConstants
