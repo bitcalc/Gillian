@@ -1,7 +1,6 @@
 (** JSIL symbolic field-value list *)
 
 open Containers
-
 module Expr = Gillian.Gil_syntax.Expr
 module SSubst = Gillian.Symbolic.Subst
 open Gillian.Gil_syntax

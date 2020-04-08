@@ -1,5 +1,6 @@
 (** {2 Macros} **)
 module Expr = Gillian.Gil_syntax.Expr
+
 module SSubst = Gillian.Symbolic.Subst
 
 type t = {
