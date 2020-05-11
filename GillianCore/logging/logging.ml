@@ -1,12 +1,17 @@
 module Mode = Mode
 module Report = Report
+module Reporter = Reporter
+module ReportBuilder = ReportBuilder
 
 let wrap_up = Reporter.wrap_up
+
+let init = Reporter.init
 
 let log lvl msgf =
   if Mode.should_log lvl then
     let report = ReportBuilder.info "" (Debug msgf) () in
-    Reporter.log report
+    let reporter = new Reporter.file_and_db_reporter in
+    reporter#log report
 
 let normal msgf = log Normal msgf
 

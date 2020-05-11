@@ -11,6 +11,29 @@ type fix_t = unit
 
 type t = WislCHeap.t
 
+module Logging = struct
+  type tl_specific = SomethingAboutMemory of t
+
+  class ['a] file_and_db_reporter =
+    object (self)
+      inherit ['a, tl_specific] Logging.Reporter.file_and_db_reporter
+
+      method! file_tl =
+        function
+        | SomethingAboutMemory mem ->
+            Format.fprintf self#fmt "Something about memory: %s"
+              (WislCHeap.str mem)
+    end
+
+  let report lvl tls =
+    if Logging.Mode.should_log lvl then
+      let report = Logging.ReportBuilder.log "" (TargetLang tls) () in
+      let reporter = new file_and_db_reporter in
+      reporter#log report
+
+  let report_normal = report Logging.Mode.Normal
+end
+
 type action_ret = ASucc of (t * vt list) | AFail of err_t list
 
 let init = WislCHeap.init
@@ -37,6 +60,7 @@ let vstr v = Format.asprintf "%a" Values.pp v
 
 (* GetCell takes one argument, which supposedly evaluates to a pointer *)
 let get_cell heap params =
+  let () = Logging.report_normal (Logging.SomethingAboutMemory heap) in
   Literal.(
     match params with
     | [ Loc loc; Int offset ] -> (

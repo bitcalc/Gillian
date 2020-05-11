@@ -33,14 +33,16 @@ let error title content = make ~title ~content ~severity:Error
 
 let warning title content = make ~title ~content ~severity:Warning
 
-let start_phase level phase =
-  if Mode.enabled () then (
-    if Mode.should_log level then (
-      let report = info "" (Phase phase) () in
-      Stack.push (report.id, phase) active_parents;
-      current := None;
-      Reporter.log report );
-    Stack.push phase all_parents )
+let start_phase =
+  let reporter = new Reporter.file_and_db_reporter in
+  fun level phase ->
+    if Mode.enabled () then (
+      if Mode.should_log level then (
+        let report = info "" (Phase phase) () in
+        Stack.push (report.id, phase) active_parents;
+        current := None;
+        reporter#log report );
+      Stack.push phase all_parents )
 
 let end_phase phase =
   if Mode.enabled () then
