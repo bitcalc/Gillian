@@ -1,8 +1,8 @@
 (* type 'b t = < log : 'a. ('a, 'b) Report.t -> unit ; wrap_up : unit -> unit; log_tl : 'b > *)
 
-class ['a, 'b] file_reporter =
+class ['tl] file_reporter =
   object (self)
-    method log (report : ('a, 'b) Report.t) =
+    method log (report : 'tl Report.t) =
       if Config.FileLogging.enabled () then
         match report.content with
         | Debug msgf    -> self#file_debug msgf
@@ -11,11 +11,11 @@ class ['a, 'b] file_reporter =
 
     method fmt = Config.FileLogging.get_formatter ()
 
-    method file_tl (_ : 'b) = ()
+    method file_tl (_ : 'tl) = ()
 
-    method private file_debug
-        : ((('a, Format.formatter, unit) format -> 'a) -> unit) -> unit =
-      fun msgf -> msgf @@ fun fmt -> Format.fprintf self#fmt (fmt ^^ "@,@?")
+    method private file_debug msgf =
+      Report.PackedPP.pf self#fmt msgf;
+      Format.fprintf self#fmt "@,@?"
 
     method private file_phase phase =
       Format.fprintf self#fmt "*** Phase %s ***@,@?"
@@ -26,11 +26,11 @@ class ['a, 'b] file_reporter =
     method initialize = Config.FileLogging.initialize ()
   end
 
-class ['a, 'b] file_and_db_reporter =
+class ['tl] file_and_db_reporter =
   object (self)
-    inherit ['a, 'b] file_reporter as super
+    inherit ['tl] file_reporter as super
 
-    method! log (report : ('a, 'b) Report.t) =
+    method! log (report : 'tl Report.t) =
       super#log report;
       if Config.DBLogging.enabled () then
         let db_rep : Report_t.t =
@@ -55,16 +55,11 @@ class ['a, 'b] file_and_db_reporter =
       | Error   -> `Error
       | Warning -> `Warning
 
-    method private db_serialize_content (content : ('a, 'b) Report.content) =
+    method private db_serialize_content (content : 'tl Report.content) =
       match content with
       | TargetLang tl -> self#db_serialize_tl tl
       | Phase p       -> Format.asprintf "Phase %s" (Report.string_of_phase p)
-      | Debug msgf    ->
-          let str = ref "" in
-          let () =
-            msgf @@ fun fmt -> Format.kasprintf (fun s -> str := s) fmt
-          in
-          !str
+      | Debug msgf    -> Report.PackedPP.str msgf
 
     method db_serialize_tl (_ : 'a) = "Cannot report tl-specific content"
 

@@ -16,7 +16,7 @@ module Logging = struct
 
   class ['a] file_and_db_reporter =
     object (self)
-      inherit ['a, tl_specific] Logging.Reporter.file_and_db_reporter
+      inherit [tl_specific] Logging.Reporter.file_and_db_reporter
 
       method! file_tl =
         function

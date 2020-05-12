@@ -9,7 +9,7 @@ let init = Reporter.init
 
 let log lvl msgf =
   if Mode.should_log lvl then
-    let report = ReportBuilder.info "" (Debug msgf) () in
+    let report = ReportBuilder.info "" (Debug (Report.PackedPP.make msgf)) () in
     let reporter = new Reporter.file_and_db_reporter in
     reporter#log report
 
